@@ -1,0 +1,21 @@
+{
+    "dependencies": {},
+    "description": "Driver for Quectel L76 GPS modules",
+    "fullname": "lib.quectel.l76",
+    "git_pointer": "zerynth://zerynth-libs/quectel-l76",
+    "info": {
+        "chip_manufacturer": "Quectel",
+        "chip_name": "L76",
+        "name": "GPS Driver",
+        "type": "Connectivity"
+    },
+    "keywords": [
+        "wireless",
+        "quectel",
+        "gps"
+    ],
+    "repo": "official",
+    "title": "Quectel L76 GPS modules",
+    "version": "r2.2.0",
+    "whatsnew": ""
+}
