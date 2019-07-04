@@ -18,7 +18,7 @@ The driver support serial mode only.
 
 Location fixes are obtained by parsing NMEA sentences of type RMC and GGA. Obtaining a fix or UTC time are thread safe operations.
 
-   """
+"""
 
 import streams
 import threading
@@ -27,6 +27,11 @@ import threading
 SERIAL=0
 I2C=1
 
+debug = False
+
+def print_d(*args):
+    if debug:
+        print(*args)
 
 class L76():
     """
@@ -69,12 +74,15 @@ class L76():
         self._cog = 0
         self._nsat = 0
         self._hdop = 0
+        self._vdop = 0
+        self._pdop = 0
         self._alt  = 0
-        self._cfix = [None]*8
+        self._cfix = [None]*10
         self._time = None
         self._fix = None
         self._rmc = False
         self._gga = False
+        self._gsa = False
         self._utc = False
         self._lock = threading.Lock()
 
@@ -175,8 +183,10 @@ class L76():
             * altitude in meters
             * speed in Km/h
             * course over ground as degrees from true north
-            * horizontal dilution of precision (0.5 - 99.9)
             * number of satellites for this fix
+            * horizontal dilution of precision (0.5 - 99.9)
+            * vertical dilution of precision (0.5 - 99.9)
+            * positional dilution of precision (0.5 - 99.9)
             * UTC time as a tuple (yyyy,MM,dd,hh,mm,ss,microseconds)
 
         """
@@ -231,7 +241,13 @@ class L76():
     ##################### Private
 
     def _set_time(self,tm,dt):
-        self._tm[0]=2000+int(dt[4:])
+        yy = int(dt[4:])
+        if yy >= 100:
+            self._tm[0]=yy
+        if yy >= 80:
+            self._tm[0]=1900+yy
+        else:
+            self._tm[0]=2000+yy
         self._tm[1]=int(dt[2:4])
         self._tm[2]=int(dt[0:2])
         self._tm[3]=int(tm[0:2])
@@ -252,7 +268,7 @@ class L76():
         self._cfix[1]=self._lon
 
     def _set_spd(self,spd):
-        self._spd = float(spd)*1.852 # konts to km/h
+        self._spd = float(spd)*1.852 # knots to km/h
         self._cfix[3] = self._spd
 
     def _set_cog(self,cog):
@@ -261,7 +277,15 @@ class L76():
 
     def _set_hdop(self,hdop):
         self._hdop = float(hdop)
-        self._cfix[5] = self._hdop
+        self._cfix[6] = self._hdop
+
+    def _set_vdop(self,vdop):
+        self._vdop = float(vdop)
+        self._cfix[7] = self._vdop
+
+    def _set_pdop(self,pdop):
+        self._pdop = float(pdop)
+        self._cfix[8] = self._pdop
 
     def _set_alt(self,alt):
         self._alt = float(alt)
@@ -269,9 +293,30 @@ class L76():
 
     def _set_nsat(self,nsat):
         self._nsat = int(nsat)
-        self._cfix[6] = self._nsat
+        self._cfix[5] = self._nsat
 
+    def _check(self,line):
+        try:
+            start = line.find('$')
+            end = line.find('*')
+            if start < 0 or end < 0 or end <= start+2:
+                print_d("L76 invalid line")
+                return None
+            crc=0
+            for ch in line[start+1:end]:
+                crc = crc^ch
+            check = int(line[end+1:end+3],16)
+            if crc == check:
+                return line[start:end]
+            print_d("L76 crc failed:",crc,check)
+            return None
+        except Exception as e:
+            print_d("L76 check", e)
+            return None
+        
     def _parse(self,line):
+        if (line is None) or len(line) < 8:
+            return
         prefix = line[1:3]
         cmd = line[3:6]
         if cmd == "RMC":
@@ -300,6 +345,17 @@ class L76():
             self._set_nsat(flds[7])
             self._set_alt(flds[9])
             self._gga = True
+        elif cmd == "GSA":
+            flds = line.split(",")
+            if len(flds)<19:
+                return
+            if flds[2]!="3":
+                # no 3D fix
+                return
+            self._set_hdop(flds[16])
+            self._set_vdop(flds[17])
+            self._set_pdop(flds[15])
+            self._gsa = True
         else:
             pass
         if self._utc:
@@ -307,7 +363,7 @@ class L76():
             self._lock.acquire()
             self._time = (self._tm[0],self._tm[1],self._tm[2],self._tm[3],self._tm[4],self._tm[5],self._tm[6])
             self._lock.release()
-        if self._rmc and self._gga:
+        if self._rmc and self._gga and self._gsa:
             # we have a fix
             self._lock.acquire()
             self._fix = (
@@ -318,10 +374,13 @@ class L76():
                     self._cfix[4],
                     self._cfix[5],
                     self._cfix[6],
+                    self._cfix[7],
+                    self._cfix[8],
                     (self._tm[0],self._tm[1],self._tm[2],self._tm[3],self._tm[4],self._tm[5],self._tm[6])
                     )
             self._rmc = False
             self._gga = False
+            self._gsa = False
             self._utc = False
             self._lock.release()
 
@@ -332,9 +391,12 @@ class L76():
         while True:
             if self.running:
                 line = self.drv.readline(buffer=buffer,size=256)
-                # print(">",len(line),line)
+                print_d(">",len(line),line)
+                line = self._check(line)
                 self._parse(line)
             else:
-                sleep(5000)
+                sleep(1000)
+
+
 
 
