@@ -63,9 +63,10 @@ class L76():
 
     def __init__(self,ifc,mode=SERIAL,baud=9600,clock=400000,addr=0x00):
         self.mode = mode
-        self.running=False
         self.ifc = ifc
         self.baud = baud
+        self.running = False
+        self.drv = None
         self.th = None
         self._tm = [0,0,0,0,0,0,0]
         self._lat = 0
@@ -91,12 +92,15 @@ class L76():
         """
 .. method:: start(rstpin=None,rstval=0)
 
-        Start the L76.
+        Start the L76 receiver thread.
 
         :param rstpin: if given, uses :samp:`rstpin` as the reset pin of L76
         :param rstval: the value to move :samp:`rstpin` to
 
         """
+        if self.th:
+            return
+            
         # init rst if needed
         if rstpin is not None:
             pinMode(rstpin,OUTPUT_PUSHPULL)
@@ -107,10 +111,8 @@ class L76():
             self.drv = streams.serial(self.ifc,baud=self.baud,set_default=False)
         else:
             raise UnsupportedError
-        if self.th:
-            self.running=True
-        else:
-            self.th = thread(self._run)
+
+        self.th = thread(self._run)
         sleep(2000)
 
 
@@ -126,6 +128,19 @@ class L76():
             self.drv.write("$PMTK225,4*2F\r\n")
         else:
             raise UnsupportedError
+
+        # let receiver thread die
+        self.running = False
+
+    def is_running(self):
+        """
+.. method:: is_running()
+
+        Return if the L76 receiver thread is running. If not, call ref::`stop()` before you attempt to ref::`start()` again.
+
+        """
+        return self.running
+
 
     def pause(self):
         """
@@ -258,8 +273,10 @@ class L76():
         self._utc=True
 
     def _set_pos(self,lat,latp,lon,lonp):
-        self._lat = int(lat[0:2]) +int(lat[2:4])/60 + int(lat[6:])/3600
-        self._lon = int(lon[0:3]) +int(lon[3:5])/60 + int(lon[7:])/3600
+        m = lat.find('.')-2
+        self._lat = int(lat[0:m]) + float(lat[m:])/60
+        m = lon.find('.')-2
+        self._lon = int(lon[0:m]) + float(lon[m:])/60
         if latp=="S":
             self._lat = -self._lat
         if lonp=="W":
@@ -297,8 +314,17 @@ class L76():
 
     def _check(self,line):
         try:
-            start = line.find('$')
-            end = line.find('*')
+            # find last $ and * markers
+            start = -1
+            while True:
+                s = line.find('$', start+1)
+                #print_d(s, start)
+                if s < 0:
+                    break
+                if s > start:
+                    start = s
+            end = line.find('*', start)
+            # check validity
             if start < 0 or end < 0 or end <= start+2:
                 print_d("L76 invalid line")
                 return None
@@ -321,13 +347,13 @@ class L76():
         cmd = line[3:6]
         if cmd == "RMC":
             flds = line.split(",")
-            if len(flds)<14:
+            if len(flds)<13:
                 return
             tm = flds[1]
             dt = flds[9]
             self._set_time(tm,dt)
             dv = flds[2]
-            if dv=="V":
+            if dv!="A":
                 # no fix
                 return
             self._set_pos(flds[3],flds[4],flds[5],flds[6])
@@ -336,7 +362,7 @@ class L76():
             self._rmc = True
         elif cmd == "GGA":
             flds = line.split(",")
-            if len(flds)<14:
+            if len(flds)<15:
                 return
             if flds[6]=="0":
                 # no fix
@@ -347,7 +373,7 @@ class L76():
             self._gga = True
         elif cmd == "GSA":
             flds = line.split(",")
-            if len(flds)<19:
+            if len(flds)<18:
                 return
             if flds[2]!="3":
                 # no 3D fix
@@ -363,8 +389,12 @@ class L76():
             self._lock.acquire()
             self._time = (self._tm[0],self._tm[1],self._tm[2],self._tm[3],self._tm[4],self._tm[5],self._tm[6])
             self._lock.release()
-        if self._rmc and self._gga and self._gsa:
+        if self._rmc and self._gga:
             # we have a fix
+            if not self._gsa:
+                # optional data VDOP, PDOP
+                self._cfix[7] = None
+                self._cfix[8] = None
             self._lock.acquire()
             self._fix = (
                     self._cfix[0],
@@ -388,15 +418,13 @@ class L76():
     def _run(self):
         buffer=bytearray(256)
         self.running=True
-        while True:
-            if self.running:
+        while self.running:
+            try:
                 line = self.drv.readline(buffer=buffer,size=256)
                 print_d(">",len(line),line)
                 line = self._check(line)
                 self._parse(line)
-            else:
-                sleep(1000)
-
-
-
-
+            except Exception as e:
+                print_d("L76 loop", e)
+                # exit thread, use is_running() to check 
+                # self.running=False
